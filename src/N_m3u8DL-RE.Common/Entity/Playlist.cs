@@ -1,0 +1,28 @@
+﻿namespace N_m3u8DL_RE.Common.Entity;
+
+public class Playlist
+{
+    // 对应Url信息
+    public string Url { get; set; } = string.Empty;
+    // 是否直播
+    public bool IsLive { get; set; } = false;
+    // 直播刷新间隔毫秒（默认15秒）
+    public double RefreshIntervalMs { get; set; } = 15000;
+    // DASH MPD 声明的最小更新周期
+    public TimeSpan? MinimumUpdatePeriod { get; set; }
+    // DASH 直播的墙上时钟原点和服务端声明的回看窗口。
+    public DateTimeOffset? AvailabilityStartTime { get; set; }
+    public TimeSpan? TimeShiftBufferDepth { get; set; }
+    // 所有分片时长总和
+    public double TotalDuration => MediaParts.Sum(x => x.MediaSegments.Sum(m => m.Duration));
+
+    // 所有分片中最长时长
+    public double? TargetDuration { get; set; }
+    // 分片信息
+    public List<MediaPart> MediaParts { get; set; } = [];
+
+    public void RemoveEmptyParts()
+    {
+        MediaParts.RemoveAll(part => part.MediaSegments.Count == 0);
+    }
+}

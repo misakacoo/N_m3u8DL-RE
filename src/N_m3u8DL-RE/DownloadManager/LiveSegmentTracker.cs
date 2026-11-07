@@ -1,0 +1,142 @@
+using N_m3u8DL_RE.Common.Entity;
+using N_m3u8DL_RE.Util;
+
+namespace N_m3u8DL_RE.DownloadManager;
+
+internal sealed class LiveSegmentTracker
+{
+    private MediaSegment? lastSegment;
+    private MediaSegment? lastObservedHlsSegment;
+    private long nextRecordingIndex;
+
+    public (long Previous, long Current)? ObserveHlsSequence(List<MediaSegment> segments)
+    {
+        if (segments.Count == 0)
+            return null;
+
+        var previous = lastObservedHlsSegment;
+        var tail = segments[^1];
+        // 与录制去重状态分开，广告过滤和回看范围裁剪不应制造源序号警告。
+        lastObservedHlsSegment = new MediaSegment
+        {
+            Index = tail.Index, Url = tail.Url, DateTime = tail.DateTime,
+            StartRange = tail.StartRange, ExpectLength = tail.ExpectLength,
+        };
+        if (previous == null)
+            return null;
+
+        var overlap = FindMatchingIndex(segments, previous, true);
+        long current;
+        if (overlap < 0)
+            current = segments[0].Index;
+        else if (segments[overlap].Index != previous.Index)
+            current = segments[overlap].Index;
+        else if (overlap + 1 < segments.Count)
+            current = segments[overlap + 1].Index;
+        else
+            return null; // 重复清单和只有签名变化的重叠窗口无需提示。
+
+        return previous.Index < long.MaxValue && current == previous.Index + 1
+            ? null : (previous.Index, current);
+    }
+
+    public List<MediaSegment> Filter(List<MediaSegment> segments, bool isHls)
+    {
+        if (lastSegment == null || segments.Count == 0) return segments;
+
+        var lastIndex = FindMatchingIndex(segments, lastSegment, isHls);
+        return lastIndex < 0 ? segments : segments.Skip(lastIndex + 1).ToList();
+    }
+
+    // 录制去重和 404 等待共用窗口匹配规则，统一处理序号重置、URL 复用和查询签名变化。
+    public static int FindMatchingIndex(List<MediaSegment> segments, MediaSegment target, bool isHls)
+    {
+        if (segments.Count == 0)
+            return -1;
+        int lastIndex;
+        if (target.DateTime is { } lastDateTime && segments.All(s => s.DateTime != null))
+        {
+            var timestamp = GetUnixTimestamp(lastDateTime);
+            bool sameTime(MediaSegment s) => GetUnixTimestamp(s.DateTime!.Value) == timestamp;
+            lastIndex = segments.FindLastIndex(s => sameTime(s) && s.Index == target.Index &&
+                SameSource(s, target));
+            if (lastIndex < 0 && isHls)
+                lastIndex = segments.FindLastIndex(s => sameTime(s) && s.Index == target.Index &&
+                    SamePathAndRange(s, target));
+            if (lastIndex < 0)
+                lastIndex = FindUniqueIndex(segments, s => sameTime(s) && SameSource(s, target));
+            if (lastIndex < 0)
+                lastIndex = FindUniqueIndex(segments, sameTime);
+        }
+        else if (isHls)
+        {
+            // 循环复用 URL 的播放列表必须先用源序号定位重叠片段。
+            lastIndex = segments.FindLastIndex(s => s.Index == target.Index &&
+                SameSource(s, target));
+            // 签名查询参数可能随刷新变化，此时比较路径和源序号。
+            if (lastIndex < 0)
+                lastIndex = segments.FindLastIndex(s => s.Index == target.Index &&
+                    SamePathAndRange(s, target));
+            // 源序号重置时，只接受唯一的 URL 匹配；多个候选无法确定哪个是旧片段。
+            if (lastIndex < 0)
+                lastIndex = FindUniqueIndex(segments, s => SameSource(s, target));
+        }
+        else
+        {
+            // DASH 的 $Number$/$Time$ 可能在新 Period 重置，不能仅凭相同文件名跳过新分片。
+            lastIndex = segments.FindLastIndex(s => SameSource(s, target));
+            // 模板值也可能位于查询串中；签名变化时仍须同时约束路径、范围并排除重复候选。
+            if (lastIndex < 0 && !string.IsNullOrEmpty(target.NameFromVar))
+                lastIndex = FindUniqueIndex(segments, s => s.NameFromVar == target.NameFromVar && SamePathAndRange(s, target));
+            if (lastIndex < 0)
+                lastIndex = FindUniqueIndex(segments, s => SamePathAndRange(s, target));
+        }
+
+        return lastIndex;
+    }
+
+    public void Record(List<MediaSegment> segments)
+    {
+        foreach (var segment in segments)
+            segment.RecordingIndex = ++nextRecordingIndex;
+
+        if (segments.Count > 0)
+            lastSegment = segments[^1];
+    }
+
+    public static string GetFileName(MediaSegment segment, string sourceName)
+    {
+        return segment.RecordingIndex is { } index
+            ? $"{index:D10}_{OtherUtil.TruncateFileName(sourceName, 200)}"
+            : sourceName;
+    }
+
+    private static bool SameSource(MediaSegment left, MediaSegment right)
+    {
+        return left.Url == right.Url && left.StartRange == right.StartRange && left.ExpectLength == right.ExpectLength;
+    }
+
+    private static int FindUniqueIndex(List<MediaSegment> segments, Predicate<MediaSegment> matches)
+    {
+        var matchIndex = -1;
+        for (var i = 0; i < segments.Count; i++)
+        {
+            if (!matches(segments[i])) continue;
+            if (matchIndex >= 0) return -1;
+            matchIndex = i;
+        }
+        return matchIndex;
+    }
+
+    private static bool SamePathAndRange(MediaSegment left, MediaSegment right)
+    {
+        return left.Url.Split('?')[0] == right.Url.Split('?')[0] &&
+            left.StartRange == right.StartRange && left.ExpectLength == right.ExpectLength;
+    }
+
+    // 文件命名和重叠判断共用毫秒精度，避免低延迟直播中同一秒多个片段混淆。
+    public static long GetUnixTimestamp(DateTime dateTime)
+    {
+        return new DateTimeOffset(dateTime.ToUniversalTime()).ToUnixTimeMilliseconds();
+    }
+}

@@ -1,0 +1,325 @@
+﻿using N_m3u8DL_RE.Common.Enum;
+using N_m3u8DL_RE.Common.Log;
+using N_m3u8DL_RE.Entity;
+using N_m3u8DL_RE.Enum;
+using System.Net;
+
+namespace N_m3u8DL_RE.CommandLine;
+
+internal class MyOption
+{
+    // 分段下载会自动调整合并/解密选项，使用副本避免污染其它段和并发轨道。
+    internal MyOption Clone() => (MyOption)MemberwiseClone();
+
+    /// <summary>
+    /// See: <see cref="CommandInvoker.Input"/>.
+    /// </summary>
+    public string Input { get; set; } = default!;
+    /// <summary>
+    /// See: <see cref="CommandInvoker.Headers"/>.
+    /// </summary>
+    public Dictionary<string, string> Headers { get; set; } = new Dictionary<string, string>();
+    public string? Cookies { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.AdKeywords"/>.
+    /// </summary>
+    public string[]? AdKeywords { get; set; }
+    // null 自动判断；true 强制显示；false 关闭点播选段交互。
+    public bool? VodSelectParts { get; set; }
+    public bool VodListParts { get; set; }
+    public string? VodDropParts { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.MaxSpeed"/>.
+    /// </summary>
+    public long? MaxSpeed { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.Keys"/>.
+    /// </summary>
+    public string[]? Keys { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.BaseUrl"/>.
+    /// </summary>
+    public string? BaseUrl { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.KeyTextFile"/>.
+    /// </summary>
+    public string? KeyTextFile { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.UrlProcessorArgs"/>.
+    /// </summary>
+    public string? UrlProcessorArgs { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.LogLevel"/>.
+    /// </summary>
+    public LogLevel LogLevel { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.NoDateInfo"/>.
+    /// </summary>
+    public bool NoDateInfo { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.NoLog"/>.
+    /// </summary>
+    public bool NoLog { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.AllowHlsMultiExtMap"/>.
+    /// </summary>
+    public bool AllowHlsMultiExtMap { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.AutoSelect"/>.
+    /// </summary>
+    public bool AutoSelect { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.DisableUpdateCheck"/>.
+    /// </summary>
+    public bool DisableUpdateCheck { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.SubOnly"/>.
+    /// </summary>
+    public bool SubOnly { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.ThreadCount"/>.
+    /// </summary>
+    public int ThreadCount { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.DownloadRetryCount"/>.
+    /// </summary>
+    public int DownloadRetryCount { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.HttpRequestTimeout"/>.
+    /// </summary>
+    public double HttpRequestTimeout { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.HttpVersion"/>.
+    /// </summary>
+    public Version HttpVersion { get; set; } = System.Net.HttpVersion.Version11;
+    // 保留参数来源，直播录制仅在未手动设置时启用自动超时。
+    public bool HttpRequestTimeoutSpecified { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.LiveRecordLimit"/>.
+    /// </summary>
+    public TimeSpan? LiveRecordLimit { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.TaskStartAt"/>.
+    /// </summary>
+    public DateTime? TaskStartAt { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.SkipMerge"/>.
+    /// </summary>
+    public bool SkipMerge { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.BinaryMerge"/>.
+    /// </summary>
+    public bool BinaryMerge { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.ForceAnsiConsole"/>.
+    /// </summary>
+    public bool ForceAnsiConsole { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.NoAnsiColor"/>.
+    /// </summary>
+    public bool NoAnsiColor { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.UseFFmpegConcatDemuxer"/>.
+    /// </summary>
+    public bool UseFFmpegConcatDemuxer { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.FFmpegConcatMode"/>.
+    /// </summary>
+    public FFmpegConcatMode FFmpegConcatMode { get; set; }
+    // 旧布尔参数仍可选择文件列表模式，统一得到实际使用的合并方式。
+    internal FFmpegConcatMode EffectiveConcatMode => UseFFmpegConcatDemuxer
+        ? Enum.FFmpegConcatMode.DEMUXER : FFmpegConcatMode;
+    /// <summary>
+    /// See: <see cref="CommandInvoker.DelAfterDone"/>.
+    /// </summary>
+    public bool DelAfterDone { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.AutoSubtitleFix"/>.
+    /// </summary>
+    public bool AutoSubtitleFix { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.CheckSegmentsCount"/>.
+    /// </summary>
+    public bool CheckSegmentsCount { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.SkipDownload"/>.
+    /// </summary>
+    public bool SkipDownload { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.WriteMetaJson"/>.
+    /// </summary>
+    public bool WriteMetaJson { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.AppendUrlParams"/>.
+    /// </summary>
+    public bool AppendUrlParams { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.MP4RealTimeDecryption"/>.
+    /// </summary>
+    public bool MP4RealTimeDecryption { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.UseShakaPackager"/>.
+    /// </summary>
+    [Obsolete("Use DecryptionEngine instead")]
+    public bool UseShakaPackager { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.DecryptionEngine"/>.
+    /// </summary>
+    public DecryptEngine DecryptionEngine { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.MuxAfterDone"/>.
+    /// </summary>
+    public bool MuxAfterDone { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.ConcurrentDownload"/>.
+    /// </summary>
+    public bool ConcurrentDownload { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.LiveRealTimeMerge"/>.
+    /// </summary>
+    public bool LiveRealTimeMerge { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.LiveKeepSegments"/>.
+    /// </summary>
+    public bool LiveKeepSegments { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.LivePerformAsVod"/>.
+    /// </summary>
+    public bool LivePerformAsVod { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.UseSystemProxy"/>.
+    /// </summary>
+    public bool UseSystemProxy { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.SubtitleFormat"/>.
+    /// </summary>
+    public SubtitleFormat SubtitleFormat { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.TmpDir"/>.
+    /// </summary>
+    public string? TmpDir { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.SaveDir"/>.
+    /// </summary>
+    public string? SaveDir { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.SaveName"/>.
+    /// </summary>
+    public string? SaveName { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.SavePattern"/>.
+    /// </summary>
+    public string? SavePattern { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.LogFilePath"/>.
+    /// </summary>
+    public string? LogFilePath { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.UILanguage"/>.
+    /// </summary>
+    public string? UILanguage { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.DecryptionBinaryPath"/>.
+    /// </summary>
+    public string? DecryptionBinaryPath { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.FFmpegBinaryPath"/>.
+    /// </summary>
+    public string? FFmpegBinaryPath { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.MkvmergeBinaryPath"/>.
+    /// </summary>
+    public string? MkvmergeBinaryPath { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.MuxImports"/>.
+    /// </summary>
+    public List<OutputFile>? MuxImports { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.VideoFilter"/>.
+    /// </summary>
+    public StreamFilter? VideoFilter { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.DropVideoFilter"/>.
+    /// </summary>
+    public StreamFilter? DropVideoFilter { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.AudioFilter"/>.
+    /// </summary>
+    public StreamFilter? AudioFilter { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.DropAudioFilter"/>.
+    /// </summary>
+    public StreamFilter? DropAudioFilter { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.SubtitleFilter"/>.
+    /// </summary>
+    public StreamFilter? SubtitleFilter { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.DropSubtitleFilter"/>.
+    /// </summary>
+    public StreamFilter? DropSubtitleFilter { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.CustomHLSMethod"/>.
+    /// </summary>
+    public EncryptMethod? CustomHLSMethod { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.CustomHLSKey"/>.
+    /// </summary>
+    public byte[]? CustomHLSKey { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.CustomHLSIv"/>.
+    /// </summary>
+    public byte[]? CustomHLSIv { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.CustomHLSScope"/>.
+    /// </summary>
+    public CustomHlsScope CustomHLSScope { get; set; } = CustomHlsScope.ALL;
+    /// <summary>
+    /// See: <see cref="CommandInvoker.CustomProxy"/>.
+    /// </summary>
+    public WebProxy? CustomProxy { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.NetworkInterface"/>.
+    /// </summary>
+    public string? NetworkInterface { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.CustomRange"/>.
+    /// </summary>
+    public CustomRange? CustomRange { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.LiveWaitTime"/>.
+    /// </summary>
+    public int? LiveWaitTime { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.LiveIdleTimeout"/>.
+    /// </summary>
+    public int? LiveIdleTimeout { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.LiveTakeCount"/>.
+    /// </summary>
+    public int LiveTakeCount { get; set; }
+
+    /// <summary>
+    /// See: <see cref="CommandInvoker.LiveCatchupOption"/>.
+    /// 支持从当前时间回退的正数 HH:mm:ss 或节目日期时间；未指定时区时使用本地时区。
+    /// 启用后按节目时间选择分片，覆盖 <see cref="LiveTakeCount"/> 的尾片选择。
+    /// </summary>
+    public LiveCatchup? LiveCatchup { get; set; }
+
+    /// <summary>
+    /// 任务调度等待结束后解析并固定的回看起点，未启用回看时为空。
+    /// 清单刷新和录制启动时复用此时间，不重新计算相对回看时长。
+    /// </summary>
+    internal DateTimeOffset? LiveCatchupStart { get; set; }
+
+    public MuxOptions? MuxOptions { get; set; }
+    // public bool LiveWriteHLS { get; set; } = true;
+    /// <summary>
+    /// See: <see cref="CommandInvoker.LivePipeMux"/>.
+    /// </summary>
+    public bool LivePipeMux { get; set; }
+    /// <summary>
+    /// See: <see cref="CommandInvoker.LiveFixVttByAudio"/>.
+    /// </summary>
+    public bool LiveFixVttByAudio { get; set; }
+}

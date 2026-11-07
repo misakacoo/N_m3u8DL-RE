@@ -1,0 +1,266 @@
+﻿using System.Globalization;
+using System.Text;
+using System.Text.RegularExpressions;
+
+namespace N_m3u8DL_RE.Common.Entity;
+
+public partial class WebVttSub
+{
+    [GeneratedRegex("X-TIMESTAMP-MAP.*")]
+    private static partial Regex TSMapRegex();
+    [GeneratedRegex("MPEGTS:(\\d+)")]
+    private static partial Regex TSValueRegex();
+    [GeneratedRegex("\\s")]
+    private static partial Regex SplitRegex();
+    [GeneratedRegex(@"<c\..*?>([\s\S]*?)<\/c>")]
+    private static partial Regex VttClassRegex();
+
+    public List<SubCue> Cues { get; set; } = [];
+    public long MpegtsTimestamp { get; set; } = 0L;
+
+    /// <summary>
+    /// 从字节数组解析WEBVTT
+    /// </summary>
+    /// <param name="textBytes"></param>
+    /// <returns></returns>
+    public static WebVttSub Parse(byte[] textBytes, long BaseTimestamp = 0L)
+    {
+        return Parse(Encoding.UTF8.GetString(textBytes), BaseTimestamp);
+    }
+
+    /// <summary>
+    /// 从字节数组解析WEBVTT
+    /// </summary>
+    /// <param name="textBytes"></param>
+    /// <param name="encoding"></param>
+    /// <returns></returns>
+    public static WebVttSub Parse(byte[] textBytes, Encoding encoding, long BaseTimestamp = 0L)
+    {
+        return Parse(encoding.GetString(textBytes), BaseTimestamp);
+    }
+
+    /// <summary>
+    /// 从字符串解析WEBVTT
+    /// </summary>
+    /// <param name="text"></param>
+    /// <returns></returns>
+    public static WebVttSub Parse(string text, long BaseTimestamp = 0L)
+    {
+        if (!text.Trim().StartsWith("WEBVTT"))
+            throw new Exception("Bad vtt!");
+
+        text += Environment.NewLine;
+
+        var webSub = new WebVttSub();
+        var needPayload = false;
+        var timeLine = "";
+        var regex1 = TSMapRegex();
+
+        if (regex1.IsMatch(text))
+        {
+            var timestamp = TSValueRegex().Match(regex1.Match(text).Value).Groups[1].Value;
+            webSub.MpegtsTimestamp = Convert.ToInt64(timestamp);
+        }
+
+        var payloads = new List<string>();
+        foreach (var line in text.Split('\n'))
+        {
+            if (line.Contains(" --> "))
+            {
+                needPayload = true;
+                timeLine = line.Trim();
+                continue;
+            }
+
+            if (!needPayload) continue;
+            
+            if (string.IsNullOrEmpty(line.Trim()))
+            {
+                var payload = string.Join(Environment.NewLine, payloads);
+                if (string.IsNullOrEmpty(payload.Trim())) continue; // 没获取到payload 跳过添加
+
+                var arr = SplitRegex().Split(timeLine.Replace("-->", "")).Where(s => !string.IsNullOrEmpty(s)).ToList();
+                var startTime = ParseTimestamp(arr[0]);
+                var endTime = ParseTimestamp(arr[1]);
+                var style = arr.Count > 2 ? string.Join(" ", arr.Skip(2)) : "";
+                webSub.Cues.Add(new SubCue()
+                {
+                    StartTime = startTime,
+                    EndTime = endTime,
+                    Payload = RemoveClassTag(string.Join("", payload.Where(c => c != 8203))), // Remove Zero Width Space!
+                    Settings = style
+                });
+                payloads.Clear();
+                needPayload = false;
+            }
+            else
+            {
+                payloads.Add(line.Trim());
+            }
+        }
+
+        if (BaseTimestamp == 0) return webSub;
+        
+        foreach (var item in webSub.Cues)
+        {
+            if (item.StartTime.TotalMilliseconds - BaseTimestamp >= 0)
+            {
+                item.StartTime = TimeSpan.FromMilliseconds(item.StartTime.TotalMilliseconds - BaseTimestamp);
+                item.EndTime = TimeSpan.FromMilliseconds(item.EndTime.TotalMilliseconds - BaseTimestamp);
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        return webSub;
+    }
+
+    private static string RemoveClassTag(string text)
+    {
+        return VttClassRegex().Replace(text, "$1");
+    }
+
+    /// <summary>
+    /// 从另一个字幕中获取所有Cue，并加载此字幕中，且自动修正偏移
+    /// </summary>
+    /// <param name="webSub"></param>
+    /// <returns></returns>
+    public WebVttSub AddCuesFromOne(WebVttSub webSub)
+    {
+        FixTimestamp(webSub, this.MpegtsTimestamp);
+        foreach (var item in webSub.Cues)
+        {
+            if (this.Cues.Contains(item)) continue;
+            
+            // 如果相差只有1ms，且payload相同，则拼接
+            var last = this.Cues.LastOrDefault();
+            if (last != null && this.Cues.Count > 0 && (item.StartTime - last.EndTime).TotalMilliseconds <= 1 && item.Payload == last.Payload && item.Settings == last.Settings)
+            {
+                last.EndTime = item.EndTime;
+            }
+            else
+            {
+                this.Cues.Add(item);
+            }
+        }
+        return this;
+    }
+
+    private void FixTimestamp(WebVttSub sub, long baseTimestamp)
+    {
+        if (sub.MpegtsTimestamp == 0)
+        {
+            return;
+        }
+
+        // 确实存在时间轴错误的情况，才修复
+        if ((this.Cues.Count > 0 && sub.Cues.Count > 0 && sub.Cues.First().StartTime < this.Cues.Last().EndTime && sub.Cues.First().EndTime != this.Cues.Last().EndTime) || this.Cues.Count == 0)
+        {
+            // The MPEG2 transport stream clocks (PCR, PTS, DTS) all have units of 1/90000 second
+            // 90 kHz 时间戳可能包含小数秒，不能先做整数除法丢掉字幕偏移。
+            var seconds = (sub.MpegtsTimestamp - baseTimestamp) / 90000.0;
+            // 转换时取最近的 tick，避免 2.002 秒等值被截断后显示成 2.001 秒。
+            var offset = TimeSpan.FromTicks((long)Math.Round(seconds * TimeSpan.TicksPerSecond));
+            // 当前预添加的字幕的起始时间小于实际上已经走过的时间(如offset已经是100秒，而字幕起始却是2秒)，才修复
+            if (sub.Cues.Count > 0 && sub.Cues.First().StartTime < offset)
+            {
+                foreach (var subCue in sub.Cues)
+                {
+                    subCue.StartTime += offset;
+                    subCue.EndTime += offset;
+                }
+            }
+        }
+    }
+
+    private IEnumerable<SubCue> GetCues()
+    {
+        return this.Cues.Where(c => !string.IsNullOrEmpty(c.Payload));
+    }
+
+    /// <summary>
+    /// 解析字幕时间，小时允许超过 23，兼容 SRT 的逗号和 TTML 的秒数形式。
+    /// </summary>
+    public static TimeSpan ParseTimestamp(string timestamp)
+    {
+        timestamp = timestamp.Replace(',', '.');
+        decimal seconds = 0;
+        if (timestamp.EndsWith('s'))
+        {
+            seconds = decimal.Parse(timestamp[..^1], CultureInfo.InvariantCulture);
+        }
+        else
+        {
+            foreach (var component in timestamp.Split(':'))
+                seconds = seconds * 60 + decimal.Parse(component, CultureInfo.InvariantCulture);
+        }
+        return TimeSpan.FromTicks(checked((long)Math.Round(seconds * TimeSpan.TicksPerSecond)));
+    }
+
+    private static string FormatTimestamp(TimeSpan time, char separator)
+    {
+        // TimeSpan 的 hh 只包含一天内的小时，会把累计数百小时的广播字幕折回。
+        time = time.Duration();
+        return string.Create(CultureInfo.InvariantCulture,
+            $"{time.Ticks / TimeSpan.TicksPerHour:00}:{time.Minutes:00}:{time.Seconds:00}{separator}{time.Milliseconds:000}");
+    }
+
+    public override string ToString()
+    {
+        var sb = new StringBuilder();
+        foreach (var c in GetCues())  // 输出时去除空串
+        {
+            sb.AppendLine(FormatTimestamp(c.StartTime, '.') + " --> " + FormatTimestamp(c.EndTime, '.') + " " + c.Settings);
+            sb.AppendLine(c.Payload);
+            sb.AppendLine();
+        }
+        sb.AppendLine();
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// 字幕向前平移指定时间
+    /// </summary>
+    /// <param name="time"></param>
+    public void LeftShiftTime(TimeSpan time)
+    {
+        foreach (var cue in this.Cues)
+        {
+            if (cue.StartTime.TotalSeconds - time.TotalSeconds > 0) cue.StartTime -= time;
+            else cue.StartTime = TimeSpan.FromSeconds(0);
+
+            if (cue.EndTime.TotalSeconds - time.TotalSeconds > 0) cue.EndTime -= time;
+            else cue.EndTime = TimeSpan.FromSeconds(0);
+        }
+    }
+
+    public string ToVtt()
+    {
+        return "WEBVTT" + Environment.NewLine + Environment.NewLine + ToString();
+    }
+
+    public string ToSrt()
+    {
+        StringBuilder sb = new StringBuilder();
+        int index = 1;
+        foreach (var c in GetCues())
+        {
+            sb.AppendLine($"{index++}");
+            sb.AppendLine(FormatTimestamp(c.StartTime, ',') + " --> " + FormatTimestamp(c.EndTime, ','));
+            sb.AppendLine(c.Payload);
+            sb.AppendLine();
+        }
+        sb.AppendLine();
+
+        var srt = sb.ToString();
+
+        if (string.IsNullOrEmpty(srt.Trim()))
+        {
+            srt = "1\r\n00:00:00,000 --> 00:00:01,000"; // 空字幕
+        }
+
+        return srt;
+    }
+}

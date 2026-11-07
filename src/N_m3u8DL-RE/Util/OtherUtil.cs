@@ -1,0 +1,375 @@
+﻿using N_m3u8DL_RE.Enum;
+using System.IO.Compression;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.RegularExpressions;
+
+namespace N_m3u8DL_RE.Util;
+
+internal static partial class OtherUtil
+{
+    // 单个路径组件通常最多 255 字节，为工具可能追加的临时后缀保留余量。
+    public const int MaxFileNameBytes = 240;
+
+    public static Dictionary<string, string> SplitHeaderArrayToDic(string[]? headers)
+    {
+        Dictionary<string, string> dic = new(StringComparer.OrdinalIgnoreCase);
+        if (headers == null) return dic;
+        
+        foreach (string header in headers)
+        {
+            var index = header.IndexOf(':');
+            if (index != -1)
+            {
+                // HTTP 请求头名称不区分大小写，也不受当前 UI 语言的大小写规则影响。
+                dic[header[..index].Trim().ToLowerInvariant()] = header[(index + 1)..].Trim();
+            }
+        }
+
+        return dic;
+    }
+
+    private static readonly char[] InvalidChars = "34,60,62,124,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,58,42,63,92,47"
+        .Split(',').Select(s => (char)int.Parse(s)).ToArray();
+    public static string GetValidFileName(string input, string re = "_", bool filterSlash = false, int maxLength = 0)
+    {
+        var title = InvalidChars.Aggregate(input, (current, invalidChar) => current.Replace(invalidChar.ToString(), re));
+        if (filterSlash)
+        {
+            title = title.Replace("/", re);
+            title = title.Replace("\\", re);
+        }
+        title = title.Trim('.');
+        if (maxLength > 0)
+            title = TruncateFileName(title, maxLength);
+        return title;
+    }
+
+    /// <summary>
+    /// 将文件名截断到指定的最大 UTF-8 字节数, 避免超出文件系统单个路径组件 255 字节的限制。
+    /// 截断时附加一段基于完整名称的稳定短哈希, 降低不同名称截断后相同的概率。
+    /// </summary>
+    public static string TruncateFileName(string name, int maxBytes)
+    {
+        if (maxBytes <= 0 || Encoding.UTF8.GetByteCount(name) <= maxBytes)
+            return name;
+
+        var hash = Convert.ToHexString(SHA1.HashData(Encoding.UTF8.GetBytes(name)))[..8].ToLowerInvariant();
+        var suffix = "_" + hash;
+        if (maxBytes < suffix.Length)
+            return hash[..Math.Min(maxBytes, hash.Length)];
+        var budget = maxBytes - suffix.Length;
+
+        // 按 Rune 累加, 避免在多字节字符(或代理对)中间截断
+        var sb = new StringBuilder();
+        var used = 0;
+        foreach (var rune in name.EnumerateRunes())
+        {
+            if (used + rune.Utf8SequenceLength > budget) break;
+            used += rune.Utf8SequenceLength;
+            sb.Append(rune.ToString());
+        }
+
+        return sb.Append(suffix).ToString();
+    }
+
+    /// <summary>
+    /// 从输入自动获取文件名
+    /// </summary>
+    /// <param name="input"></param>
+    /// <param name="addSuffix"></param>
+    /// <returns></returns>
+    public static string GetFileNameFromInput(string input, bool addSuffix = true)
+    {
+        var suffix = addSuffix ? "_" + DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss") : "_";
+        string name;
+        if (File.Exists(input))
+        {
+            name = Path.GetFileNameWithoutExtension(input);
+        }
+        else
+        {
+            var uri = new Uri(input.Split('?').First());
+            name = GetValidFileName(Path.GetFileNameWithoutExtension(uri.LocalPath));
+        }
+        // 自动保存名限制为 200 字节并保留时间戳，为后续语言、扩展名等后缀留出空间。
+        // 直播用于识别源分片时保留完整名称，随后在落盘处截断。
+        return addSuffix ? GetSafeFileName(name, suffix, maxBytes: 200) : name + suffix;
+    }
+
+    /// <summary>
+    /// 限制单个文件或目录名称的 UTF-8 字节数，后缀单独预留空间，保留时间戳及媒体扩展名。
+    /// </summary>
+    public static string GetSafeFileName(string name, string suffix = "", int maxBytes = MaxFileNameBytes)
+    {
+        var suffixBytes = Encoding.UTF8.GetByteCount(suffix);
+        if (suffixBytes >= maxBytes)
+            return TruncateFileName(name + suffix, maxBytes);
+        return TruncateFileName(name, maxBytes - suffixBytes) + suffix;
+    }
+
+    /// <summary>
+    /// 从 hh:mm:ss 解析TimeSpan
+    /// </summary>
+    /// <param name="timeStr"></param>
+    /// <returns></returns>
+    public static TimeSpan ParseDur(string timeStr)
+    {
+        var arr = timeStr.Replace("：", ":").Split(':');
+        var days = -1;
+        var hours = -1;
+        var mins = -1;
+        var secs = -1;
+        arr.Reverse().Select(i => Convert.ToInt32(i)).ToList().ForEach(item =>
+        {
+            if (secs == -1) secs = item;
+            else if (mins == -1) mins = item;
+            else if (hours == -1) hours = item;
+            else if (days == -1) days = item;
+        });
+
+        if (days == -1) days = 0;
+        if (hours == -1) hours = 0;
+        if (mins == -1) mins = 0;
+        if (secs == -1) secs = 0;
+
+        return new TimeSpan(days, hours, mins, secs);
+    }
+
+    /// <summary>
+    /// 从1h3m20s解析出总秒数
+    /// </summary>
+    /// <param name="timeStr"></param>
+    /// <returns></returns>
+    /// <exception cref="ArgumentException"></exception>
+    public static double ParseSeconds(string timeStr)
+    {
+        var pattern = TimeStrRegex();
+
+        var match = pattern.Match(timeStr);
+
+        if (!match.Success)
+        {
+            throw new ArgumentException("时间格式无效");
+        }
+
+        int hours = match.Groups[1].Success ? int.Parse(match.Groups[1].Value) : 0;
+        int minutes = match.Groups[2].Success ? int.Parse(match.Groups[2].Value) : 0;
+        int seconds = match.Groups[3].Success ? int.Parse(match.Groups[3].Value) : 0;
+
+        return hours * 3600 + minutes * 60 + seconds;
+    }
+
+    // 默认只删除空目录并向父目录递归，直到遇到根目录或非空目录。
+    // cleanMetadata 用于任务结束清理：移除本目录树内的 Finder 元数据和空子目录，
+    // 此模式不向父目录递归；两种模式都不跟随目录符号链接，保留 PNG 等实际文件。
+    public static void SafeDeleteDir(string dirPath, bool cleanMetadata = false)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(dirPath) || !Directory.Exists(dirPath) ||
+                (File.GetAttributes(dirPath) & FileAttributes.ReparsePoint) != 0)
+                return;
+
+            if (cleanMetadata)
+            {
+                foreach (var child in Directory.EnumerateDirectories(dirPath))
+                    SafeDeleteDir(child, cleanMetadata: true);
+                var metadata = Path.Combine(dirPath, ".DS_Store");
+                if (File.Exists(metadata))
+                    File.Delete(metadata);
+            }
+
+            if (Directory.EnumerateFileSystemEntries(dirPath).Any())
+                return;
+            Directory.Delete(dirPath);
+        }
+        catch (IOException)
+        {
+            // 并发清理可能已删除目录，或有新文件写入；停止本次清理即可。
+            return;
+        }
+        if (!cleanMetadata)
+            SafeDeleteDir(Path.GetDirectoryName(dirPath)!);
+    }
+
+    /// <summary>
+    /// 解压并替换原文件
+    /// </summary>
+    /// <param name="filePath"></param>
+    public static async Task DeGzipFileAsync(string filePath)
+    {
+        var deGzipFile = Path.ChangeExtension(filePath, ".dezip_tmp");
+        try
+        {
+            await using (var fileToDecompressAsStream = File.OpenRead(filePath))
+            {
+                await using var decompressedStream = File.Create(deGzipFile);
+                await using var decompressionStream = new GZipStream(fileToDecompressAsStream, CompressionMode.Decompress);
+                await decompressionStream.CopyToAsync(decompressedStream);
+            };
+            File.Delete(filePath);
+            File.Move(deGzipFile, filePath);
+        }
+        catch 
+        {
+            if (File.Exists(deGzipFile)) File.Delete(deGzipFile);
+        }
+    }
+
+    public static string GetEnvironmentVariable(string key, string defaultValue = "")
+    {
+        return Environment.GetEnvironmentVariable(key) ?? defaultValue;
+    }
+
+    public static string GetMuxExtension(MuxFormat muxFormat)
+    {
+        return muxFormat switch
+        {
+            MuxFormat.MP4 => ".mp4",
+            MuxFormat.MKV => ".mkv",
+            MuxFormat.TS => ".ts",
+            _ => throw new ArgumentException($"unknown format: {muxFormat}")
+        };
+    }
+
+    [GeneratedRegex(@"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")]
+    private static partial Regex TimeStrRegex();
+
+    /// <summary>
+    /// 格式化保存模板
+    /// </summary>
+    /// <param name="savePattern">模板字符串</param>
+    /// <param name="streamSpec">流规格</param>
+    /// <param name="saveName">保存名称</param>
+    /// <param name="taskId">任务ID</param>
+    /// <returns>格式化后的文件名(不含扩展名)</returns>
+    public static string FormatSavePattern(string savePattern, Common.Entity.StreamSpec streamSpec, string? saveName, int taskId)
+    {
+        var result = savePattern;
+
+        // 替换基本变量
+        result = result.Replace("<SaveName>", saveName ?? "");
+        result = result.Replace("<Id>", taskId.ToString());
+        result = result.Replace("<Codecs>", streamSpec.Codecs ?? "");
+        result = result.Replace("<Language>", streamSpec.Language ?? "");
+        result = result.Replace("<Bandwidth>", streamSpec.Bandwidth?.ToString() ?? "");
+        result = result.Replace("<Resolution>", streamSpec.Resolution ?? "");
+        result = result.Replace("<FrameRate>", streamSpec.FrameRate?.ToString() ?? "");
+        result = result.Replace("<Channels>", streamSpec.Channels ?? "");
+        result = result.Replace("<VideoRange>", streamSpec.VideoRange ?? "");
+        result = result.Replace("<MediaType>", streamSpec.MediaType?.ToString() ?? "");
+        result = result.Replace("<GroupId>", streamSpec.GroupId ?? "");
+        result = result.Replace("<Name>", streamSpec.Name ?? "");
+
+        // 清理多余的分隔符
+        result = result.Replace("__", "_").Replace("..", ".").Trim('_').Trim('.');
+
+        // 清理文件名中的非法字符
+        return GetValidFileName(result);
+    }
+
+    /// <summary>
+    /// 处理文件名冲突，使用流元数据生成唯一文件名
+    /// </summary>
+    /// <param name="originalPath">原始文件路径</param>
+    /// <param name="streamSpec">流规格（用于获取元数据）</param>
+    /// <param name="reservedPaths">当前下载已预留的完整路径，文件被解密器临时改名时仍保留</param>
+    /// <returns>不冲突的文件路径</returns>
+    public static string HandleFileCollision(string originalPath, Common.Entity.StreamSpec streamSpec,
+        HashSet<string>? reservedPaths = null)
+    {
+        if (reservedPaths == null)
+            return FindAvailableOutputPath(originalPath, streamSpec, null);
+        // 检查与预留必须一起完成，避免并发轨道在创建文件前取得同一路径。
+        lock (reservedPaths)
+        {
+            var output = FindAvailableOutputPath(originalPath, streamSpec, reservedPaths);
+            reservedPaths.Add(Path.GetFullPath(output));
+            return output;
+        }
+    }
+
+    private static string FindAvailableOutputPath(string originalPath, Common.Entity.StreamSpec streamSpec,
+        HashSet<string>? reservedPaths)
+    {
+        bool Exists(string path) => File.Exists(path) || reservedPaths?.Contains(Path.GetFullPath(path)) == true;
+        var dir = Path.GetDirectoryName(originalPath) ?? "";
+        var nameWithoutExt = Path.GetFileNameWithoutExtension(originalPath);
+        var ext = Path.GetExtension(originalPath);
+        // 先限制最终输出名；模板、语言及重名后缀拼接完成后都必须重新检查长度。
+        originalPath = Path.Combine(dir, GetSafeFileName(nameWithoutExt, ext));
+        if (!Exists(originalPath))
+            return originalPath;
+
+        // 尝试使用元数据生成唯一文件名
+        var attempts = new List<string>();
+
+        // 对于视频流，尝试添加分辨率和带宽
+        if (streamSpec.MediaType == Common.Enum.MediaType.VIDEO)
+        {
+            if (!string.IsNullOrEmpty(streamSpec.Resolution))
+            {
+                attempts.Add($"{nameWithoutExt}.{streamSpec.Resolution}");
+            }
+            if (streamSpec.Bandwidth.HasValue)
+            {
+                var bandwidthMbps = streamSpec.Bandwidth.Value / 1000000.0;
+                attempts.Add($"{nameWithoutExt}.{bandwidthMbps:F1}Mbps");
+            }
+            if (!string.IsNullOrEmpty(streamSpec.Resolution) && streamSpec.Bandwidth.HasValue)
+            {
+                var bandwidthMbps = streamSpec.Bandwidth.Value / 1000000.0;
+                attempts.Add($"{nameWithoutExt}.{streamSpec.Resolution}.{bandwidthMbps:F1}Mbps");
+            }
+        }
+        // 对于音频流，尝试添加语言、声道和带宽
+        else if (streamSpec.MediaType == Common.Enum.MediaType.AUDIO)
+        {
+            if (!string.IsNullOrEmpty(streamSpec.Language))
+            {
+                attempts.Add($"{nameWithoutExt}.{streamSpec.Language}");
+            }
+            if (!string.IsNullOrEmpty(streamSpec.Channels))
+            {
+                attempts.Add($"{nameWithoutExt}.{streamSpec.Channels}ch");
+            }
+            if (!string.IsNullOrEmpty(streamSpec.Language) && !string.IsNullOrEmpty(streamSpec.Channels))
+            {
+                attempts.Add($"{nameWithoutExt}.{streamSpec.Language}.{streamSpec.Channels}ch");
+            }
+            if (streamSpec.Bandwidth.HasValue)
+            {
+                var bandwidthKbps = streamSpec.Bandwidth.Value / 1000;
+                attempts.Add($"{nameWithoutExt}.{bandwidthKbps}kbps");
+            }
+        }
+        // 对于字幕流，尝试添加语言
+        else if (streamSpec.MediaType == Common.Enum.MediaType.SUBTITLES)
+        {
+            if (!string.IsNullOrEmpty(streamSpec.Language))
+            {
+                attempts.Add($"{nameWithoutExt}.{streamSpec.Language}");
+            }
+        }
+
+        // 尝试所有基于元数据的文件名
+        foreach (var attempt in attempts)
+        {
+            var attemptPath = Path.Combine(dir, GetSafeFileName(attempt, ext));
+            if (!Exists(attemptPath))
+                return attemptPath;
+        }
+
+        // 所有元数据方案都失败，回退到 "copy" 方案
+        var output = originalPath;
+        var copySuffix = "";
+        while (Exists(output))
+        {
+            // 从完整原名生成候选，避免重复截断的哈希使不同候选难以追踪。
+            copySuffix += ".copy";
+            output = Path.Combine(dir, GetSafeFileName(nameWithoutExt + copySuffix, ext));
+        }
+        return output;
+    }
+}
